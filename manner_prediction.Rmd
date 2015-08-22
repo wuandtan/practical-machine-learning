@@ -1,0 +1,120 @@
+---
+title: "Manner Prediction"
+author: "tingyao"
+date: "Tuesday, August 18, 2015"
+output: html_document
+---
+
+#Introduction
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, we will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. The participants were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset). 
+
+Our task is to predict the manner ("classe" variable) in which they did the exercise.
+
+#Data Exploration
+
+```{r}
+library(rpart)
+library(caret)
+      
+training <- read.csv("pml-training.csv")
+test <- read.csv("pml-testing.csv")
+dim(training)
+```
+We can see that there are 19622 rows and 160 columns for the training set. A further looking at the colnames of the training set suggests that the first column "X" and the second column "user_name" are not relevant to the "Classe". Now we will investigate the missing values in the training set.
+```{r}
+length(which(is.na(training)))
+```
+There are 1287472 elements missing in the training set. To fill these missing values, we use the average of non-missing values in that column. This operation is also performed on the testing set.
+
+```{r}
+#replace NAs with the mean of the column 
+      for (i in (3:(ncol(training)-1)))
+      {
+              training[,i] <- as.numeric(training[,i])
+               t <- mean(training[,i],na.rm=TRUE)
+               training[is.na(training[,i]),i] <- t
+              test[,i] <- as.numeric(test[,i])
+              test[is.na(test[,i]),i] <- t
+            
+      }
+# throw away the first two columns
+ training <- training[,c(3:ncol(training))]
+ test <- test[,c(3:ncol(test))]
+```
+
+#Model exploration and selection
+In this section, we will use the caret package to do a 3-fold cross validation on the training set for various pre-processing methods and classifiers. We are aiming at selecting the best pre-processing method, and fix a good classifier for our manner recognition task.
+
+We first define the control of model fit:
+```{r}
+ fitControl <- trainControl(## 3-fold CV
+              method = "repeatedcv",
+              number = 3,
+              ## repeated 3 times
+              repeats = 3)
+      set.seed(825)
+     
+```
+and then, we use the CART decision tree to train the model and see how it performs:
+```{r}
+modFit <- train(classe ~ ., data = training, method = "rpart",trControl = fitControl)
+modFit$results$Accuracy
+```
+
+How about if we do some preprocessing like "centering" and "scaling", with the same classifier?
+```{r}
+modFit <- train(classe ~ ., data = training, method = "rpart",trControl = fitControl,preProc = c("center", "scale"))
+modFit$results$Accuracy
+```
+Apparently, the accuracy on the training set is improved. So on the top of "centering" and "scaling", does PCA transformation help to further improve the accuracy? Let's try to take the first 10 PCA components:
+```{r}
+preProc <- preProcess(training[,-ncol(training)],method=c("center","scale","pca"),pcaComp=10)
+trainPC <- predict(preProc,training[,-ncol(training)])
+modFit <- train(training$classe ~.,method="rpart",trControl = fitControl,data=trainPC)
+modFit$results$Accuracy
+```
+The accuray is 37%, much lower than the one that does not take PCA analysis. How about if we take the first 100 PCA component?
+take the first 10 PCA components:
+```{r}
+preProc <- preProcess(training[,-ncol(training)],method=c("center","scale","pca"),pcaComp=100)
+trainPC <- predict(preProc,training[,-ncol(training)])
+modFit <- train(training$classe ~.,method="rpart",trControl = fitControl,data=trainPC)
+modFit$results$Accuracy
+```
+Still not helping. Then we decide only take "centering" and "scaling" as the pre-processing. Now we are going to investigate how importance each feature to classfication. We use information gain to evaluate the imporance.
+```{r}
+library(RWeka)
+preProc <- preProcess(training[,-ncol(training)],method=c("center","scale"))
+trainPC <- predict(preProc,training[,-ncol(training)])
+infogain <- InfoGainAttributeEval(training$classe ~. , data = trainPC)
+rank_info <- sort.int(infogain, decreasing=TRUE, index.return = TRUE)
+plot(infogain,main="information gain for each feature",ylab="Information gain")                                
+```
+We can see that the information gain of 6 features are higher than 0.5. In order to speed up the training, and reduce the risk of overfitting, we keep the 6 most discriminative features.
+```{r}
+testPC <- predict(preProc,test[,-ncol(test)])
+trainPC <- trainPC[,rank_info$ix[1:6]]
+testPC <- testPC[,rank_info$ix[1:6]]
+```
+In the next step, we are going to see if any other classifiers could help to improve the accuracy. The classifier that we will try is J48 and SVM.
+```{r}
+#J48 decision tree
+modFit <- train(training$classe ~.,method="J48",trControl = fitControl,data=trainPC)
+modFit$results$Accuracy
+```
+J48 achieves an accuracy of 99.8% on the training set! This is enough for us! Now we are going to train the J48 model and predict the test samples. All predicted results are saved for submission.
+```{r}
+#J48 decision tree
+modFit <- train(training$classe ~.,method="J48",data=trainPC)
+answers <- predict(modFit, newdata=testPC)
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+pml_write_files(answers)
+```
+#Conclusions
+In this report, we use "centering" and "scaling" as pre-processing. The 6 most discriminative features are selected in terms of information gain. The accuracy of 10-fold cross validation over the training set is 99.8%. All prediction results for the testing samples are saved for the submission.
